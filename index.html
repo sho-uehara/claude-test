@@ -102,6 +102,7 @@ const saEl = document.getElementById('sa');
 let cssW = 1, cssH = 1, dpr = 1, S = 1, W = 420, H = 760, ui = 1;
 const safe = { t: 0, r: 0, b: 0, l: 0 };
 let vigGrad = null, redGrad = null;
+let badLand = false;   // スマホを横向きにしている（遊べる大きさにならない）
 
 const player = {
   x: 210, y: 420, r: CFG.PR, st: 'idle', bounced: false, sx: 0, sy: 0, tx: 0, ty: 0, len: 1, dur: 0.1, u: 0,
@@ -118,6 +119,8 @@ function resize() {
   S = Math.min(cssW / 420, cssH / 760);       // ワールド→CSS px の倍率
   W = cssW / S; H = cssH / S;                 // ワールドの広さ（短辺がおよそ420〜760）
   ui = clamp(Math.min(cssW / 390, cssH / 720), 0.75, 1.6);
+  badLand = cssW > cssH && cssH < 500;
+  if (badLand && state === 'play') { state = 'paused'; stateT = 0; pendingTap = null; }
   try {
     const cs = getComputedStyle(saEl);
     safe.t = parseFloat(cs.paddingTop) || 0; safe.r = parseFloat(cs.paddingRight) || 0;
@@ -314,7 +317,7 @@ let banner = '', bannerT = 0;
 let pendingTap = null;
 let spawnClock = 0, firstWave = false, demoClock = 0, aiT = 0;
 let deathWave = null;
-let quality = 1, ftAvg = 16.7;
+let quality = 1, ftAvg = 16.7, workAvg = 2;
 
 const enemies = [];
 const parts = [], ppool = [];     // 破片・火花
@@ -379,7 +382,8 @@ function addGhostLine(x0, y0, x1, y1, ang) {
 }
 function addText(x, y, str, color, size) {
   if (texts.length > 8) texts.shift();
-  texts.push({ x: clamp(x, 70, W - 70), y: clamp(y, 90, H - 40), str, color, size, t: 0, max: 0.9, s: 0.2, v: 14 });
+  const yMin = (safe.t + 130 * ui) / S + size * 0.5;   // コンボ表示の帯より下に出す
+  texts.push({ x, y: clamp(y, yMin, H - 40), str, color, size, t: 0, max: 0.9, s: 0.2, v: 14 });
 }
 
 /* =========================================================
@@ -430,9 +434,9 @@ function patSingle() {
   spawnEnemy(gameT > 35 && Math.random() < 0.3 ? 'dart' : 'grunt', p.x, p.y, rand(0.92, 1.08));
   return 1;
 }
-function patCluster(n, side, along, margin) { // ひとかたまり
+function patCluster(n, side, along, margin, mulArg) { // ひとかたまり
   const p = edgePoint(side || pickSide(), along == null ? rand(0.2, 0.8) : along, margin);
-  const spread = 15 * Math.sqrt(n), rot = rand(0, TAU), mul = rand(0.95, 1.05);
+  const spread = 15 * Math.sqrt(n), rot = rand(0, TAU), mul = mulArg || rand(0.95, 1.05);
   const cx = p.x - p.nx * spread, cy = p.y - p.ny * spread;
   for (let i = 0; i < n; i++) {
     const rr = 15 * Math.sqrt(i), a = i * 2.39996 + rot;
@@ -509,7 +513,7 @@ function spawnUpdate(dt) {
   // 最初の波：画面の横（上寄り）から3体のかたまり。最初のタップで「まとめて砕く」を体験させる
   if (!firstWave && gameT >= 0.25) {
     firstWave = true;
-    patCluster(3, Math.random() < 0.5 ? 'left' : 'right', clamp((H * 0.36 - 90) / (H - 150), 0, 1), 4);
+    patCluster(3, Math.random() < 0.5 ? 'left' : 'right', clamp((H * 0.36 - 90) / (H - 150), 0, 1), 4, 1.4);
   }
   if (gameT < 2.5) return;
   spawnClock -= dt;
@@ -595,9 +599,7 @@ function tryBounce() {
   if (hx) rx = -rx;
   if (hy) ry = -ry;
   let tx = p.x + rx * 50, ty = p.y + ry * 50;
-  if (hx > 0) tx = Math.max(tx, T); else if (hx < 0) tx = Math.min(tx, W - T);
-  if (hy > 0) ty = Math.max(ty, T); else if (hy < 0) ty = Math.min(ty, H - T);
-  tx = clamp(tx, CFG.EDGE, W - CFG.EDGE); ty = clamp(ty, CFG.EDGE, H - CFG.EDGE);
+  tx = clamp(tx, T, W - T); ty = clamp(ty, T, H - T);
   addRing(p.x, p.y, 6, 34, 0.2, '#ffffff', 3, 0.8);
   puff(p.x, p.y, hx ? -hx : 0, hy ? -hy : 0, 7, '#ffffff');
   trauma = Math.min(1, trauma + 0.1);
@@ -669,7 +671,7 @@ function endDash() {
     if (n >= 4) {
       hitstop = Math.max(hitstop, CFG.HS_BIG);
       if (!reduceMotion && !demo) flashWhite = Math.min(0.45, 0.15 + n * 0.04);
-      trauma = Math.min(1, trauma + 0.25);
+      trauma = Math.min(1, trauma + 0.12);
       vib(40);
     }
   }
@@ -682,15 +684,15 @@ function killEnemy(e) {
   if (combo > maxCombo) maxCombo = combo;
   if (!demo) {
     score += e.pts * p.kills * (1 + Math.floor(combo / 10)); // まとめて砕くほど、コンボが続くほど高得点
-    scoreV += 3;
-    if (combo >= 2) { comboV += 7; comboShown = combo; }
+    scoreV = Math.min(scoreV + 3, 9);
+    if (combo >= 2) { comboV = Math.min(comboV + 7, 12); comboShown = combo; }
   }
   const big = e.type === 'brute';
   shatter(e.x, e.y, e.color, e.r, big ? 26 : 14, p.dirX, p.dirY, big ? 1.3 : 1);
   flashes.push({ x: e.x, y: e.y, r: e.r, type: e.type, rot: e.rot, ang: Math.atan2(e.vy, e.vx), t: 0 });
   if (flashes.length > 24) flashes.shift();
   addRing(e.x, e.y, e.r, e.r * 3.4, 0.28, '#ffffff', 4, 0.9);
-  trauma = Math.min(1, trauma + (0.17 + 0.06 * Math.min(p.kills - 1, 6)) * (big ? 1.4 : 1));
+  trauma = Math.max(trauma, Math.min(1, (0.25 + 0.065 * (p.kills - 1)) * (big ? 1.3 : 1))); // まとめて砕くほど強く
   punchX = clamp(punchX + p.dirX * 2.6, -8, 8); punchY = clamp(punchY + p.dirY * 2.6, -8, 8);
   gridPulse = 1;
   if (killSfxBudget > 0) { killSfxBudget--; sfx.kill(combo, big); }
@@ -817,7 +819,7 @@ function update(dt) {
 // ヒットストップ中も動かす（実時間）もの
 function realUpdate(rdt) {
   const motionK = (state === 'title' ? 0.35 : 1) * (reduceMotion ? 0.4 : 1);
-  trauma = Math.max(0, trauma - rdt * 2.2);
+  trauma = Math.max(0, trauma - rdt * 3);
   shakeT += rdt;
   const amp = CFG.SHAKE_PX * Math.min(1, trauma) * motionK;
   shakeX = amp * (Math.sin(shakeT * 71.3) * 0.6 + Math.sin(shakeT * 127.9 + 1.7) * 0.4) + punchX * motionK;
@@ -903,11 +905,15 @@ function toResult() {
    入力（タップのみ。PC はクリック）
    ========================================================= */
 function handleTap(x, y) {
+  if (badLand) return;
   switch (state) {
     case 'title': if (stateT > 0.15) startGame(); break;
     case 'play': requestDash(x, y); break;
     case 'result': if (stateT > CFG.RESULT_LOCK) startGame(); break;
-    case 'paused': state = 'play'; stateT = 0; sfx.blip(); break;
+    case 'paused':
+      state = 'play'; stateT = 0;
+      player.inv = Math.max(player.inv, 0.6); player.hurtBlink = Math.max(player.hurtBlink, 0.6); // 再開直後の猶予
+      sfx.blip(); break;
   }
 }
 function onPointerDown(e) {
@@ -944,9 +950,12 @@ document.addEventListener('gesturechange', e => e.preventDefault());
 document.addEventListener('dblclick', e => e.preventDefault());
 document.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('selectstart', e => e.preventDefault());
+function pauseGame() { if (state === 'play') { state = 'paused'; stateT = 0; pendingTap = null; } }
+window.addEventListener('blur', pauseGame);
+window.addEventListener('pagehide', () => { pauseGame(); A.suspend(); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    if (state === 'play') { state = 'paused'; stateT = 0; pendingTap = null; }
+    pauseGame();
     A.suspend();
   } else {
     A.resume(); lastTs = 0;
@@ -1123,27 +1132,45 @@ function drawPlayer() {
   ctx.beginPath(); ctx.ellipse(p.x, p.y, p.r * along * 0.5, p.r * perp * 0.5, p.ang, 0, TAU); ctx.fill();
   ctx.globalAlpha = 1;
 }
-function drawHint() {
-  // 初回だけ：一番近い敵に「TAP」の照準を出す
-  if (state !== 'play' || taught) return;
+// 初回の照準の位置：一番近い敵のかたまりの中心。画面の縁から十分内側に入ってから出す
+function hintTarget() {
   let best = null, bd = 1e9;
   for (const e of enemies) {
     if (!e.alive || !e.entered) continue;
     const d = Math.hypot(e.x - player.x, e.y - player.y);
     if (d < bd) { bd = d; best = e; }
   }
-  if (!best) return;
-  const t = stateT, r = best.r + 16 + Math.sin(t * 8) * 4;
+  if (!best) return null;
+  let gx = 0, gy = 0, n = 0;
+  for (const e of enemies) {
+    if (e.alive && Math.hypot(e.x - best.x, e.y - best.y) < 55) { gx += e.x; gy += e.y; n++; }
+  }
+  gx /= n; gy /= n;
+  if (Math.min(gx, W - gx, gy, H - gy) < CFG.BOUNCE_ZONE + 18) return null;
+  let rad = best.r;
+  for (const e of enemies) {
+    if (e.alive && Math.hypot(e.x - best.x, e.y - best.y) < 55) rad = Math.max(rad, Math.hypot(e.x - gx, e.y - gy) + e.r);
+  }
+  return { x: gx, y: gy, r: rad };
+}
+function drawHint() {
+  // 初回だけ：敵のかたまりに「TAP!」の照準を出す
+  if (state !== 'play' || taught) return;
+  const h = hintTarget();
+  if (!h) return;
+  const t = stateT, r = h.r + 14 + Math.sin(t * 8) * 4;
   ctx.globalAlpha = 0.3; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
   ctx.setLineDash([4, 8]);
-  ctx.beginPath(); ctx.moveTo(player.x, player.y); ctx.lineTo(best.x, best.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(player.x, player.y); ctx.lineTo(h.x, h.y); ctx.stroke();
   ctx.setLineDash([10, 7]); ctx.lineDashOffset = -t * 40;
   ctx.globalAlpha = 0.95; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.arc(best.x, best.y, r, 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(h.x, h.y, r, 0, TAU); ctx.stroke();
   ctx.setLineDash([]); ctx.lineDashOffset = 0;
   ctx.font = `900 22px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#ffffff';
-  ctx.fillText('TAP!', best.x, best.y - r - 16 - Math.abs(Math.sin(t * 6)) * 6);
+  const bob = Math.abs(Math.sin(t * 6)) * 6;
+  const above = h.y - r - 30 > (safe.t + 100 * ui) / S;
+  ctx.fillText('TAP!', h.x, above ? h.y - r - 16 - bob : h.y + r + 18 + bob);
   ctx.globalAlpha = 1;
 }
 function drawTexts() {
@@ -1153,9 +1180,11 @@ function drawTexts() {
     const size = Math.max(1, t.size * Math.max(0.1, t.s));
     ctx.globalAlpha = a;
     ctx.font = `900 ${size.toFixed(1)}px ${FONT}`;
+    const hw = ctx.measureText(t.str).width / 2 + 6;          // 文字の幅で、画面からはみ出さないよう寄せる
+    const x = W > hw * 2 ? clamp(t.x, hw, W - hw) : W / 2;
     ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(7,9,20,0.85)';
-    ctx.strokeText(t.str, t.x, t.y);
-    ctx.fillStyle = t.color; ctx.fillText(t.str, t.x, t.y);
+    ctx.strokeText(t.str, x, t.y);
+    ctx.fillStyle = t.color; ctx.fillText(t.str, x, t.y);
   }
   ctx.globalAlpha = 1;
 }
@@ -1163,8 +1192,8 @@ function drawEdgeMarkers() {
   // 画面外から来る敵の予告
   const top = (safe.t + 8) / S;
   for (const e of enemies) {
-    if (!e.alive || e.entered) continue;
-    const mx = clamp(e.x, 10, W - 10), my = clamp(e.y, 10 + top, H - 10);
+    if (!e.alive || (e.x > -e.r && e.x < W + e.r && e.y > -e.r && e.y < H + e.r)) continue;
+    const mx = clamp(e.x, 10 + safe.l / S, W - 10 - safe.r / S), my = clamp(e.y, 10 + top, H - 10 - safe.b / S);
     const a = Math.atan2(e.vy, e.vx);
     ctx.globalAlpha = 0.45 + 0.3 * Math.sin(shakeT * 12);
     ctx.fillStyle = e.color;
@@ -1212,7 +1241,7 @@ function drawHUD() {
   ctx.globalAlpha = 1;
   // スコア
   ctx.save();
-  ctx.translate(cssW / 2, top + 18 * ui); ctx.scale(scoreS, scoreS);
+  ctx.translate(cssW / 2, top + 18 * ui); ctx.scale(clamp(scoreS, 0.7, 1.4), clamp(scoreS, 0.7, 1.4));
   txt(fmt(dispScore), 0, 0, Math.round(28 * ui), '#ffffff', 800, cssW * 0.5, 4);
   ctx.restore();
   // コンボ（弾む）
@@ -1220,8 +1249,8 @@ function drawHUD() {
     const cy = top + 66 * ui;
     ctx.save();
     ctx.globalAlpha = comboA;
-    ctx.translate(cssW / 2, cy); const s = Math.max(0.2, comboS);
-    ctx.scale(s, s); ctx.rotate((comboS - 1) * 0.25);
+    ctx.translate(cssW / 2, cy); const s = clamp(comboS, 0.6, 1.6);
+    ctx.scale(s, s); ctx.rotate(clamp(comboS - 1, -0.6, 0.6) * 0.25);
     const col = comboColor(comboShown);
     txt(String(comboShown), 0, 0, Math.round(46 * ui), col, 900, cssW * 0.6, 6);
     txt('COMBO', 0, 30 * ui, Math.round(12 * ui), col, 800, cssW * 0.6, 3);
@@ -1256,8 +1285,8 @@ function drawTitle() {
   const y2 = cssH * 0.47;
   txt('タップした場所へ一瞬で突進。', cx, y2, Math.round(17 * ui), '#ffffff', 800, cssW - 32, 5);
   txt('通り道の敵をまとめて砕け！', cx, y2 + 28 * ui, Math.round(17 * ui), '#ffffff', 800, cssW - 32, 5);
-  txt('止まっている間に触れると −1（3回でおわり）', cx, y2 + 62 * ui, Math.round(13 * ui), '#9aa3cc', 700, cssW - 32, 4);
-  const pulse = 0.7 + 0.3 * Math.sin(t * 5);
+  txt('止まっている間に敵に触れるとライフ−1（3回でおわり）', cx, y2 + 62 * ui, Math.round(13 * ui), '#9aa3cc', 700, cssW - 32, 4);
+  const pulse = 0.82 + 0.18 * Math.sin(t * 5);
   ctx.globalAlpha = pulse;
   txt('TAP TO START', cx, cssH * 0.76, Math.round(24 * ui), C_PLAYER, 900, cssW - 40, 5);
   ctx.globalAlpha = 1;
@@ -1297,7 +1326,7 @@ function drawResult() {
   }
   const ready = stateT > CFG.RESULT_LOCK;
   ctx.globalAlpha = ready ? 0.78 + 0.22 * Math.sin(stateT * 5) : 0.15;
-  txt('TAP TO RETRY', cx, cssH * 0.8, Math.round(24 * ui), C_PLAYER, 900, cssW - 40, 5);
+  txt('TAP TO RETRY', cx, Math.max(cssH * 0.8, y + 80 * ui), Math.round(24 * ui), C_PLAYER, 900, cssW - 40, 5);
   ctx.globalAlpha = 1;
 }
 function drawPaused() {
@@ -1347,6 +1376,17 @@ function render() {
   if (state === 'title') drawTitle();
   else if (state === 'result') drawResult();
   else if (state === 'paused') drawPaused();
+  if (badLand) drawRotate();
+}
+function drawRotate() {
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(7,9,20,0.94)'; ctx.fillRect(0, 0, cssW, cssH);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const cx = cssW / 2, cy = cssH / 2;
+  ctx.save(); ctx.translate(cx, cy - 34); ctx.rotate(Math.sin(stateT * 2.5) * 0.5);
+  ctx.strokeStyle = C_PLAYER; ctx.lineWidth = 3;
+  ctx.strokeRect(-14, -24, 28, 48); ctx.restore();
+  txt('スマホを縦向きにしてください', cx, cy + 22, 18, '#ffffff', 800, cssW - 32, 4);
 }
 
 /* =========================================================
@@ -1358,11 +1398,13 @@ function frame(ts) {
   if (!lastTs) lastTs = ts;
   let rdt = (ts - lastTs) / 1000; lastTs = ts;
   if (!(rdt >= 0)) rdt = 0;
-  if (rdt < 0.1) {
+  if (rdt < 0.25) {
+    // 重い端末では粒子を減らす。30Hz 固定の省電力モードは「重い」と見なさない（処理時間でも判断する）
     ftAvg += (rdt * 1000 - ftAvg) * 0.05;
-    if (ftAvg > 24 && quality > 0.55) quality = 0.55;                  // 重い端末では粒子を減らす
-    else if (ftAvg < 18 && quality < 1) quality = Math.min(1, quality + rdt * 0.1);
+    if (ftAvg > 24 && workAvg > 8 && quality > 0.55) quality = 0.55;
+    else if ((ftAvg < 18 || workAvg < 4) && quality < 1) quality = Math.min(1, quality + rdt * 0.1);
   }
+  const w0 = performance.now();
   rdt = Math.min(rdt, 0.05);
   checkResize();
   stateT += rdt;
@@ -1382,6 +1424,7 @@ function frame(ts) {
     }
   }
   render();
+  workAvg += (performance.now() - w0 - workAvg) * 0.1;
 }
 
 resize();
@@ -1399,7 +1442,7 @@ if (TEST) {
     get parts() { return parts.length; }, get quality() { return quality; }, get hitstop() { return hitstop; },
     get trauma() { return trauma; }, get shake() { return [shakeX, shakeY, shakeR]; },
     get audio() { return A.state(); }, get sfxCount() { return sfxCount; }, get vibCount() { return vibCount; },
-    get taught() { return taught; }, get stateT() { return stateT; },
+    get taught() { return taught; }, get stateT() { return stateT; }, get work() { return workAvg; },
     start: startGame, tap: requestDash, step: update, title: startTitle,
   };
 }
